@@ -1,0 +1,18 @@
+[package]
+name = "kb_index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0.98"
+clap = { version = "4.5.37", features = ["derive"] }
+console = "0.15.11"
+grep-regex = "0.1.13"
+grep-searcher = "0.1.14"
+regex = "1.11.1"
+reqwest = { version = "0.12.15", features = ["json"] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = "1.0.140"
+tokio = { version = "1.45.0", features = ["full"] }
+uuid = { version = "1.16.0", features = ["v4"] }
+walkdir = "2.5.0"
