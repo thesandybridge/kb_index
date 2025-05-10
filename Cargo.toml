@@ -18,3 +18,5 @@ uuid = { version = "1.16.0", features = ["v4"] }
 walkdir = "2.5.0"
 syntect = { version = "5", features = ["default-fancy"] }
 two-face = { version = "0.4.3", features = ["syntect-default-onig"] }
+dirs = "6.0.0"
+toml = "0.8.22"

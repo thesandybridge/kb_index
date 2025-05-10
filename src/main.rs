@@ -10,6 +10,12 @@ use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 use two_face::theme::extra;
 use uuid::Uuid;
 use walkdir::WalkDir;
+use dirs::config_dir;
+
+#[derive(Deserialize, Serialize)]
+struct AppConfig {
+    chroma_host: String,
+}
 
 #[derive(Parser)]
 #[command(name = "kb-index")]
@@ -86,10 +92,11 @@ async fn main() -> anyhow::Result<()> {
         } => {
             let embedding = get_embedding(&client, &query).await?;
             let collection_id = get_collection_id(&client).await?;
+            let config = load_config()?;
 
             let url = format!(
-                "http://192.168.30.7:8000/api/v2/tenants/{}/databases/{}/collections/{}/query",
-                TENANT, DATABASE, collection_id
+                "{}/api/v2/tenants/{}/databases/{}/collections/{}/query",
+                config.chroma_host, TENANT, DATABASE, collection_id
             );
 
             let payload = serde_json::json!({
@@ -168,6 +175,34 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn load_config() -> anyhow::Result<AppConfig> {
+    let config_path = config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Unable to determine config directory"))?
+        .join("kb-index")
+        .join("config.toml");
+
+    if !config_path.exists() {
+        let default = AppConfig {
+            chroma_host: "http://192.168.30.7:8000".into(),
+        };
+
+        // Create parent dir if needed
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        let content = toml::to_string_pretty(&default)?;
+        std::fs::write(&config_path, content)?;
+
+        println!("✅ Created default config at {}", config_path.display());
+        return Ok(default);
+    }
+
+    let contents = std::fs::read_to_string(&config_path)?;
+    let config: AppConfig = toml::from_str(&contents)?;
+    Ok(config)
 }
 
 fn highlight_syntax(code: &str, file_path: &str) -> String {
@@ -259,9 +294,10 @@ const DATABASE: &str = "default_database";
 const COLLECTION: &str = "kb_index";
 
 async fn get_collection_id(client: &Client) -> anyhow::Result<String> {
+    let config = load_config()?;
     let url = format!(
-        "http://192.168.30.7:8000/api/v2/tenants/{}/databases/{}/collections",
-        TENANT, DATABASE
+        "{}/api/v2/tenants/{}/databases/{}/collections",
+        config.chroma_host, TENANT, DATABASE
     );
 
     let resp = client.get(&url).send().await?;
@@ -288,9 +324,10 @@ async fn get_collection_id(client: &Client) -> anyhow::Result<String> {
 }
 
 async fn create_collection_if_missing(client: &Client) -> anyhow::Result<()> {
+    let config = load_config()?;
     let url = format!(
-        "http://192.168.30.7:8000/api/v2/tenants/{}/databases/{}/collections",
-        TENANT, DATABASE
+        "{}/api/v2/tenants/{}/databases/{}/collections",
+        config.chroma_host, TENANT, DATABASE
     );
 
     let payload = serde_json::json!({
@@ -324,6 +361,7 @@ async fn send_to_chroma(
     embedding: &Vec<f32>,
     path: &Path,
 ) -> anyhow::Result<()> {
+    let config = load_config()?;
     create_collection_if_missing(&client).await?;
     let collection_id = get_collection_id(&client).await?;
 
@@ -337,8 +375,8 @@ async fn send_to_chroma(
     };
 
     let add_url = format!(
-        "http://192.168.30.7:8000/api/v2/tenants/{}/databases/{}/collections/{}/add",
-        TENANT, DATABASE, collection_id
+        "{}/api/v2/tenants/{}/databases/{}/collections/{}/add",
+        config.chroma_host, TENANT, DATABASE, collection_id
     );
 
     let resp = client.post(&add_url).json(&payload).send().await?;
