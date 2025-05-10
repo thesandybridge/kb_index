@@ -1,31 +1,38 @@
 use clap::Parser;
-use std::fs;
-use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
-use uuid::Uuid;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use regex::Regex;
-use console::Style;
+use std::fs;
+use std::path::{Path, PathBuf};
+use syntect::easy::HighlightLines;
+use syntect::highlighting::Style;
+use syntect::parsing::SyntaxSet;
+use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
+use two_face::theme::extra;
+use uuid::Uuid;
+use walkdir::WalkDir;
 
 #[derive(Parser)]
 #[command(name = "kb-index")]
 #[command(about = "Index or query local files using Chroma")]
 enum Cli {
-    /// Index a file or directory
     Index {
-        /// Path to file or directory
         path: PathBuf,
     },
-    /// Query the index
     Query {
-        /// Natural language query string
         query: String,
-
-        /// Number of results to return
         #[arg(short, long, default_value_t = 5)]
         top_k: usize,
+        #[arg(short, long, default_value = "pretty")]
+        format: String,
     },
+}
+
+#[derive(Serialize)]
+struct SearchResult<'a> {
+    index: usize,
+    source: &'a str,
+    distance: f64,
+    content: &'a str,
 }
 
 #[derive(Serialize)]
@@ -72,7 +79,11 @@ async fn main() -> anyhow::Result<()> {
             println!("Indexing complete.");
         }
 
-        Cli::Query { query, top_k } => {
+        Cli::Query {
+            query,
+            top_k,
+            format,
+        } => {
             let embedding = get_embedding(&client, &query).await?;
             let collection_id = get_collection_id(&client).await?;
 
@@ -87,9 +98,7 @@ async fn main() -> anyhow::Result<()> {
             });
 
             let resp = client.post(&url).json(&payload).send().await?;
-
             let body = resp.text().await?;
-
             let parsed: serde_json::Value = serde_json::from_str(&body)?;
 
             let docs = parsed["documents"]
@@ -110,13 +119,50 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|inner| inner.as_array())
                 .ok_or_else(|| anyhow::anyhow!("No distances in response"))?;
 
+            let mut results = vec![];
+
             for (i, doc) in docs.iter().enumerate() {
                 let text = doc.as_str().unwrap_or("<invalid UTF-8>");
-                println!("--- Result {} ---", i + 1);
-                println!("📄 Source: {}", metas[i].get("source").unwrap_or(&serde_json::Value::String("<unknown>".into())));
-                println!("🔎 Distance: {:.4}", dists[i].as_f64().unwrap_or_default());
-                println!("{}", highlight_query(text, &query));
-                println!();
+                let source = metas[i]
+                    .get("source")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("<unknown>");
+                let distance = dists[i].as_f64().unwrap_or_default();
+
+                results.push(SearchResult {
+                    index: i + 1,
+                    source,
+                    distance,
+                    content: text,
+                });
+            }
+
+            match format.as_str() {
+                "json" => {
+                    println!("{}", serde_json::to_string_pretty(&results)?);
+                }
+                "markdown" => {
+                    for r in &results {
+                        let lang = Path::new(r.source)
+                            .extension()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("text");
+                        println!("### Result {}\n", r.index);
+                        println!("**Source:** `{}`  ", r.source);
+                        println!("**Distance:** `{:.4}`  ", r.distance);
+                        println!("```{}\n{}\n```", lang, r.content);
+                        println!();
+                    }
+                }
+                _ => {
+                    for r in &results {
+                        println!("--- Result {} ---", r.index);
+                        println!("📄 Source: {}", r.source);
+                        println!("🔎 Distance: {:.4}", r.distance);
+                        println!("{}", highlight_syntax(r.content, r.source));
+                        println!();
+                    }
+                }
             }
         }
     }
@@ -124,14 +170,29 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn highlight_query(text: &str, query: &str) -> String {
-    let escaped = regex::escape(query);
-    let re = Regex::new(&format!(r"(?i)\b{}\b", escaped)).unwrap(); // word-boundary, case-insensitive
-    let highlight = Style::new().bold().yellow();
+fn highlight_syntax(code: &str, file_path: &str) -> String {
+    let ps = SyntaxSet::load_defaults_newlines();
 
-    re.replace_all(text, |caps: &regex::Captures| {
-        highlight.apply_to(&caps[0]).to_string()
-    }).to_string()
+    // Load GruvboxDark theme from two-face
+    let theme_set = extra(); // loads extended themes
+
+    let theme = theme_set.get(two_face::theme::EmbeddedThemeName::GruvboxDark);
+
+    let syntax = ps
+        .find_syntax_for_file(file_path)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| ps.find_syntax_plain_text());
+
+    let mut h = HighlightLines::new(syntax, theme);
+    let mut result = String::new();
+
+    for line in LinesWithEndings::from(code) {
+        let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ps).unwrap();
+        result.push_str(&as_24_bit_terminal_escaped(&ranges[..], false));
+    }
+
+    result
 }
 
 fn collect_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -141,7 +202,12 @@ fn collect_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     } else {
         for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
             let path = entry.path();
-            if path.is_file() && matches!(path.extension().and_then(|s| s.to_str()), Some("md" | "rs" | "tsx" | "js" | "jsx")) {
+            if path.is_file()
+                && matches!(
+                    path.extension().and_then(|s| s.to_str()),
+                    Some("md" | "rs" | "tsx" | "ts" | "js" | "jsx")
+                )
+            {
                 files.push(path.to_path_buf());
             }
         }
@@ -160,7 +226,7 @@ fn chunk_text(text: &str) -> Vec<String> {
 async fn get_embedding(client: &Client, text: &str) -> anyhow::Result<Vec<f32>> {
     let body = EmbeddingRequest {
         input: vec![text.to_string()],
-        model: "text-embedding-3-small".into(),
+        model: "text-embedding-3-large".into(),
     };
 
     let response = client
@@ -168,7 +234,7 @@ async fn get_embedding(client: &Client, text: &str) -> anyhow::Result<Vec<f32>> 
         .bearer_auth(std::env::var("OPENAI_API_KEY")?)
         .json(&body)
         .send()
-    .await?;
+        .await?;
 
     let status = response.status();
     let text_body = response.text().await?;
@@ -231,17 +297,14 @@ async fn create_collection_if_missing(client: &Client) -> anyhow::Result<()> {
         "name": COLLECTION,
         "embedding_function": {
         "type": "openai",
-        "model": "text-embedding-3-small"
+        "model": "text-embedding-3-large"
         }
     });
 
     let resp = client.post(&url).json(&payload).send().await?;
 
     match resp.status() {
-        reqwest::StatusCode::CONFLICT => {
-            // already exists — fine
-            Ok(())
-        }
+        reqwest::StatusCode::CONFLICT => Ok(()),
         status if status.is_success() => {
             println!("✅ Created collection '{}'", COLLECTION);
             Ok(())
@@ -264,7 +327,6 @@ async fn send_to_chroma(
     create_collection_if_missing(&client).await?;
     let collection_id = get_collection_id(&client).await?;
 
-    // Build payload
     let payload = ChromaV2AddRequest {
         ids: vec![id.to_string()],
         embeddings: vec![embedding.clone()],
@@ -279,12 +341,7 @@ async fn send_to_chroma(
         TENANT, DATABASE, collection_id
     );
 
-    let resp = client
-        .post(&add_url)
-        .json(&payload)
-        .send()
-    .await?;
-
+    let resp = client.post(&add_url).json(&payload).send().await?;
     let status = resp.status();
     let body = resp.text().await?;
 
