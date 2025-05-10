@@ -63,13 +63,19 @@ You can set your OpenAI API key in one of two ways:
 
 By default, KB-Index connects to ChromaDB at `http://localhost:8000`. You can modify this in the config file located at:
 
-- Linux/macOS: `~/.config/kb-index/config.toml`
+- Linux: `$HOME/.config/kb-index/config.toml`
+- macOS: `$HOME/Library/Application Support/kb-index/config.toml`
 - Windows: `%APPDATA%\kb-index\config.toml`
 
 Example config.toml:
 ```toml
 chroma_host = "http://localhost:8000"
 openai_api_key = "your_openai_api_key_here"
+openai_completion_model = "gpt-4"
+openai_embedding_model = "text-embedding-3-large"
+file_extensions = ["md", "rs", "tsx", "ts", "js", "jsx", "html"]
+syntax_theme = "gruvbox-dark"
+
 ```
 
 You can view your current configuration with:

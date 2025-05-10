@@ -41,7 +41,10 @@ pub fn handle_config(set_api_key: Option<String>, show: bool) -> anyhow::Result<
             Some(key) if !key.is_empty() => "Set (hidden for security)",
             _ => "Not set"
         });
-
+        println!("OpenAI Completion Model: {}", config.openai_completion_model);
+        println!("OpenAI Embedding Model: {}", config.openai_embedding_model);
+        println!("Supported Extensions: {:?}", config.file_extensions.unwrap());
+        println!("Syntax Theme: {:?}", config.syntax_theme.unwrap());
         // Check environment variable
         match std::env::var("OPENAI_API_KEY") {
             Ok(_) => println!("OPENAI_API_KEY environment variable: Set (hidden for security)"),
