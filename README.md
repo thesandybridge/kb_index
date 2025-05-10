@@ -27,7 +27,7 @@ KB-Index (Knowledge Base Index) is a tool that helps developers create a searcha
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/yourusername/kb-index.git
+   git clone https://github.com/thesandybridge/kb-index.git
    cd kb-index
    ```
 
