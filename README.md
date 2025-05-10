@@ -61,7 +61,7 @@ You can set your OpenAI API key in one of two ways:
 
 ### ChromaDB Configuration
 
-By default, KB-Index connects to ChromaDB at `http://192.168.30.7:8000`. You can modify this in the config file located at:
+By default, KB-Index connects to ChromaDB at `http://localhost:8000`. You can modify this in the config file located at:
 
 - Linux/macOS: `~/.config/kb-index/config.toml`
 - Windows: `%APPDATA%\kb-index\config.toml`

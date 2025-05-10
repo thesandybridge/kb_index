@@ -20,7 +20,7 @@ pub fn load_config() -> anyhow::Result<AppConfig> {
 
     if !config_path.exists() {
         let default = AppConfig {
-            chroma_host: "http://192.168.30.7:8000".into(),
+            chroma_host: "http://localhost:8000".into(),
             openai_api_key: env_api_key,
         };
 
@@ -37,12 +37,12 @@ pub fn load_config() -> anyhow::Result<AppConfig> {
 
     let contents = fs::read_to_string(&config_path)?;
     let mut config: AppConfig = toml::from_str(&contents)?;
-    
+
     // If API key is in environment, it takes precedence over config file
     if env_api_key.is_some() {
         config.openai_api_key = env_api_key;
     }
-    
+
     Ok(config)
 }
 
@@ -60,7 +60,7 @@ pub fn get_openai_api_key() -> anyhow::Result<String> {
             eprintln!("Debug: OPENAI_API_KEY environment variable error: {:?}", e);
         }
     }
-    
+
     // Then try from config file
     let config = load_config()?;
     if let Some(key) = config.openai_api_key {
@@ -68,6 +68,6 @@ pub fn get_openai_api_key() -> anyhow::Result<String> {
             return Ok(key);
         }
     }
-    
+
     anyhow::bail!("OpenAI API key not found in environment or config file. Please set the OPENAI_API_KEY environment variable or add it to your config file.")
 }
