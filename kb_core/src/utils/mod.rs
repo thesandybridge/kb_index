@@ -1,27 +1,64 @@
-use std::path::{Path, PathBuf};
+use walkdir::WalkDir;
+use bat::assets::HighlightingAssets;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Style;
-use syntect::parsing::SyntaxSet;
+use syntect::parsing::SyntaxReference;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
-use two_face::theme::extra;
-use walkdir::WalkDir;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+use std::io::Write;
+
+pub fn pipe_to_bat(content: &str, file_path: &str) -> std::io::Result<()> {
+    let extension = std::path::Path::new(file_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("txt");
+
+    let mut child = Command::new("bat")
+        .arg("--language")
+        .arg(extension)
+        .arg("--style")
+        .arg("plain") // Or "full" or "numbers" if you want line numbers and headers
+        .arg("--paging")
+        .arg("always")
+        .stdin(Stdio::piped())
+        .spawn()?;
+
+    if let Some(stdin) = child.stdin.as_mut() {
+        stdin.write_all(content.as_bytes())?;
+    }
+
+    child.wait()?;
+    Ok(())
+}
 
 pub fn highlight_syntax(code: &str, file_path: &str) -> String {
-    let ps = SyntaxSet::load_defaults_newlines();
-    let theme_set = extra();
-    let theme = theme_set.get(two_face::theme::EmbeddedThemeName::GruvboxDark);
+    let assets = HighlightingAssets::from_binary();
 
-    let syntax = ps
-        .find_syntax_for_file(file_path)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| ps.find_syntax_plain_text());
+    // Unwrap the SyntaxSet and ThemeSet properly
+    let syntax_set = assets
+        .get_syntax_set()
+        .expect("failed to load bat syntax set");
+
+    // If your theme isn't in the list, this will panic. Replace with one from `bat --list-themes` if needed.
+    let theme = assets.get_theme("gruvbox-dark");
+
+    let extension = Path::new(file_path)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("txt");
+
+    let syntax: &SyntaxReference = syntax_set
+        .find_syntax_by_extension(extension)
+        .or_else(|| syntax_set.find_syntax_by_first_line(code))
+        .unwrap_or_else(|| syntax_set.find_syntax_plain_text());
 
     let mut h = HighlightLines::new(syntax, theme);
-    let mut result = String::new();
 
+    let mut result = String::new();
     for line in LinesWithEndings::from(code) {
-        let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ps).unwrap();
+        let ranges: Vec<(Style, &str)> =
+            h.highlight_line(line, syntax_set).expect("highlighting failed");
         result.push_str(&as_24_bit_terminal_escaped(&ranges[..], false));
     }
 
