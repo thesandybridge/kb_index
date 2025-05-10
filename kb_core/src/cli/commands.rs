@@ -1,6 +1,7 @@
 use crate::chroma::{self, SearchResult};
 use crate::config;
 use crate::embedding;
+use crate::llm;
 use crate::utils;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
@@ -143,6 +144,37 @@ pub async fn handle_query(
                 println!("```{}\n{}\n```", lang, r.content);
                 println!();
             }
+        }
+        "smart" => {
+            let annotated_chunks: Vec<String> = results.iter()
+                .map(|r| {
+                    let lang = Path::new(r.source)
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("text");
+
+                    format!(
+                        "**File:** `{}`\n\n```{}\n{}\n```",
+                        r.source, lang, r.content
+                    )
+                })
+                .collect();
+
+            let context = annotated_chunks.join("\n\n---\n\n");
+
+            let prompt = format!(
+                "You are a helpful coding and personal assistant.\n\
+                    Use the following code snippets to answer the question. Each file is shown with its source path and syntax.\n\
+                    Format your response in Markdown and include code where necessary.\n\n\
+                    Question:\n{}\n\n\
+                    Documents:\n{}\n\n\
+                    Answer:",
+                query, context
+            );
+
+            let raw_answer = llm::get_llm_response(client, &prompt).await?;
+            let rendered = utils::render_markdown_highlighted(&raw_answer);
+            println!("💡 Answer:\n\n{}", rendered);
         }
         _ => {
             for r in &results {

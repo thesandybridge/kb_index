@@ -93,3 +93,25 @@ pub fn chunk_text(text: &str) -> Vec<String> {
         .filter(|chunk| !chunk.trim().is_empty())
         .collect()
 }
+
+use regex::Regex;
+
+pub fn render_markdown_highlighted(md: &str) -> String {
+    let code_block_re = Regex::new(r"(?s)```(\w*)\n(.*?)```").unwrap();
+
+    let mut out = String::new();
+    let mut last = 0;
+
+    for cap in code_block_re.captures_iter(md) {
+        let whole = cap.get(0).unwrap();
+        let lang = cap.get(1).map(|m| m.as_str()).unwrap_or("text");
+        let code = cap.get(2).unwrap().as_str();
+
+        out.push_str(&md[last..whole.start()]);
+        out.push_str(&crate::utils::highlight_syntax(code, &format!("fake.{}", lang)));
+        last = whole.end();
+    }
+
+    out.push_str(&md[last..]);
+    out
+}
