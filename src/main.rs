@@ -1,4 +1,6 @@
 use clap::Parser;
+use dirs::config_dir;
+use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -10,7 +12,6 @@ use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 use two_face::theme::extra;
 use uuid::Uuid;
 use walkdir::WalkDir;
-use dirs::config_dir;
 
 #[derive(Deserialize, Serialize)]
 struct AppConfig {
@@ -73,33 +74,35 @@ async fn main() -> anyhow::Result<()> {
     match cli {
         Cli::Index { path } => {
             let paths = collect_files(&path)?;
+            let total_files = paths.len() as u64;
+            let pb = ProgressBar::new(total_files);
+            pb.set_style(
+                ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}")
+                    .unwrap()
+                    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
+            );
+
             for path in paths {
+                pb.set_message(format!("Indexing {}", path.display()));
                 let content = fs::read_to_string(&path)?;
                 let chunks = chunk_text(&content);
-                for chunk in chunks {
-                    if chunk.trim().is_empty() {
-                        println!("⚠️ Skipping empty chunk");
-                        continue;
-                    }
 
-                    if chunk.len() > 100_000 {
-                        println!("⚠️ Skipping large chunk ({} chars)", chunk.len());
+                for chunk in &chunks {
+                    if chunk.trim().is_empty() || chunk.len() > 100_000 {
                         continue;
                     }
 
                     let id = Uuid::new_v4().to_string();
                     let embedding = get_embedding(&client, &chunk).await?;
-                    send_to_chroma(&client, &id, &chunk, &embedding, &path).await?;
+                    send_to_chroma(&client, &id, &chunk, &embedding, &path, &pb).await?;
                 }
+                pb.inc(1);
             }
-            println!("Indexing complete.");
+
+            pb.finish_with_message("🎉 Indexing complete.");
         }
 
-        Cli::Query {
-            query,
-            top_k,
-            format,
-        } => {
+        Cli::Query { query, top_k, format } => {
             let embedding = get_embedding(&client, &query).await?;
             let collection_id = get_collection_id(&client).await?;
             let config = load_config()?;
@@ -136,28 +139,28 @@ async fn main() -> anyhow::Result<()> {
                 .and_then(|inner| inner.as_array())
                 .ok_or_else(|| anyhow::anyhow!("No distances in response"))?;
 
-            let mut results = vec![];
+            let results: Vec<SearchResult> = docs
+                .iter()
+                .enumerate()
+                .map(|(i, doc)| {
+                    let text = doc.as_str().unwrap_or("<invalid UTF-8>");
+                    let source = metas[i]
+                        .get("source")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("<unknown>");
+                    let distance = dists[i].as_f64().unwrap_or_default();
 
-            for (i, doc) in docs.iter().enumerate() {
-                let text = doc.as_str().unwrap_or("<invalid UTF-8>");
-                let source = metas[i]
-                    .get("source")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("<unknown>");
-                let distance = dists[i].as_f64().unwrap_or_default();
-
-                results.push(SearchResult {
-                    index: i + 1,
-                    source,
-                    distance,
-                    content: text,
-                });
-            }
+                    SearchResult {
+                        index: i + 1,
+                        source,
+                        distance,
+                        content: text,
+                    }
+                })
+                .collect();
 
             match format.as_str() {
-                "json" => {
-                    println!("{}", serde_json::to_string_pretty(&results)?);
-                }
+                "json" => println!("{}", serde_json::to_string_pretty(&results)?),
                 "markdown" => {
                     for r in &results {
                         let lang = Path::new(r.source)
@@ -198,29 +201,25 @@ fn load_config() -> anyhow::Result<AppConfig> {
             chroma_host: "http://192.168.30.7:8000".into(),
         };
 
-        // Create parent dir if needed
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent)?;
         }
 
         let content = toml::to_string_pretty(&default)?;
-        std::fs::write(&config_path, content)?;
+        fs::write(&config_path, content)?;
 
         println!("✅ Created default config at {}", config_path.display());
         return Ok(default);
     }
 
-    let contents = std::fs::read_to_string(&config_path)?;
+    let contents = fs::read_to_string(&config_path)?;
     let config: AppConfig = toml::from_str(&contents)?;
     Ok(config)
 }
 
 fn highlight_syntax(code: &str, file_path: &str) -> String {
     let ps = SyntaxSet::load_defaults_newlines();
-
-    // Load GruvboxDark theme from two-face
-    let theme_set = extra(); // loads extended themes
-
+    let theme_set = extra();
     let theme = theme_set.get(two_face::theme::EmbeddedThemeName::GruvboxDark);
 
     let syntax = ps
@@ -344,8 +343,8 @@ async fn create_collection_if_missing(client: &Client) -> anyhow::Result<()> {
     let payload = serde_json::json!({
         "name": COLLECTION,
         "embedding_function": {
-        "type": "openai",
-        "model": "text-embedding-3-large"
+            "type": "openai",
+            "model": "text-embedding-3-large"
         }
     });
 
@@ -371,6 +370,7 @@ async fn send_to_chroma(
     doc: &str,
     embedding: &Vec<f32>,
     path: &Path,
+    pb: &ProgressBar,
 ) -> anyhow::Result<()> {
     let config = load_config()?;
     create_collection_if_missing(&client).await?;
@@ -395,22 +395,21 @@ async fn send_to_chroma(
     let body = resp.text().await?;
 
     if !status.is_success() {
-        println!(
+        pb.println(format!(
             "❌ Chroma error: HTTP {} - {}\nPayload ID: {}, Path: {}",
             status,
             body,
             id,
             path.display()
-        );
+        ));
         anyhow::bail!("Failed to insert into Chroma");
-    } else {
-        println!(
-            "✅ Added chunk to Chroma: file={}, id={}, chars={}",
-            path.display(),
-            id,
-            doc.len()
-        );
     }
+
+    pb.set_message(format!(
+        "✅ Indexed chunk: file={}, chars={}",
+        path.display(),
+        doc.len()
+    ));
 
     Ok(())
 }
