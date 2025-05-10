@@ -168,7 +168,7 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Acknowledgments
 
-- [OpenAI](https://openai.com/) for their text embedding models
+- [OpenAI](https://openai.com/) for their text embedding and completion models
 - [ChromaDB](https://www.trychroma.com/) for the vector database
 - [Rust](https://www.rust-lang.org/) and its amazing ecosystem
 
