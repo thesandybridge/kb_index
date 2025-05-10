@@ -12,12 +12,10 @@ pub fn highlight_syntax(code: &str, file_path: &str) -> String {
     let theme_name = config.syntax_theme.as_deref().unwrap_or("gruvbox-dark");
     let assets = HighlightingAssets::from_binary();
 
-    // Unwrap the SyntaxSet and ThemeSet properly
     let syntax_set = assets
         .get_syntax_set()
         .expect("failed to load bat syntax set");
 
-    // If your theme isn't in the list, this will panic. Replace with one from `bat --list-themes` if needed.
     let theme = assets.get_theme(theme_name);
 
     let extension = Path::new(file_path)

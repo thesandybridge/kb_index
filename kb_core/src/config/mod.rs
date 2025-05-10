@@ -27,7 +27,6 @@ pub fn load_config() -> anyhow::Result<AppConfig> {
         .join("kb-index")
         .join("config.toml");
 
-    // Try to get API key from environment first
     let env_api_key = env::var("OPENAI_API_KEY").ok();
 
     if !config_path.exists() {
@@ -54,7 +53,6 @@ pub fn load_config() -> anyhow::Result<AppConfig> {
     let contents = fs::read_to_string(&config_path)?;
     let mut config: AppConfig = toml::from_str(&contents)?;
 
-    // If API key is in environment, it takes precedence over config file
     if env_api_key.is_some() {
         config.openai_api_key = env_api_key;
     }
@@ -62,9 +60,7 @@ pub fn load_config() -> anyhow::Result<AppConfig> {
     Ok(config)
 }
 
-/// Get the OpenAI API key from config or environment
 pub fn get_openai_api_key() -> anyhow::Result<String> {
-    // First try to get from environment
     match env::var("OPENAI_API_KEY") {
         Ok(key) => {
             if !key.is_empty() {
@@ -72,12 +68,10 @@ pub fn get_openai_api_key() -> anyhow::Result<String> {
             }
         },
         Err(e) => {
-            // Log the specific error for debugging
             eprintln!("Debug: OPENAI_API_KEY environment variable error: {:?}", e);
         }
     }
 
-    // Then try from config file
     let config = load_config()?;
     if let Some(key) = config.openai_api_key {
         if !key.is_empty() {
