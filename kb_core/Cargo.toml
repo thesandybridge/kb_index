@@ -24,3 +24,4 @@ indicatif = "0.17.11"
 syntect-assets = "0.23.6"
 lazy_static = "1.5.0"
 bat = { version = "0.25.0", features = ["build-assets"] }
+ignore = "0.4.23"

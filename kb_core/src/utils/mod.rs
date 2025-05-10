@@ -1,4 +1,4 @@
-use walkdir::WalkDir;
+use ignore::WalkBuilder;
 use bat::assets::HighlightingAssets;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::Style;
@@ -49,19 +49,28 @@ pub fn collect_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         .collect();
 
     let mut files = Vec::new();
+
     if root.is_file() {
-        files.push(root.to_path_buf());
+        if let Some(ext) = root.extension().and_then(|s| s.to_str()) {
+            if allowed_exts.contains(ext) {
+                files.push(root.to_path_buf());
+            }
+        }
     } else {
-        for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
+        let walker = WalkBuilder::new(root)
+            .add_custom_ignore_filename(".kbignore") // Optional
+            .hidden(false)
+            .build();
+
+        for result in walker {
+            let entry = result?;
             let path = entry.path();
-            if path.is_file()
-                && path
-                    .extension()
-                    .and_then(|s| s.to_str())
-                    .map(|ext| allowed_exts.contains(ext))
-                    .unwrap_or(false)
-            {
-                files.push(path.to_path_buf());
+            if path.is_file() {
+                if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
+                    if allowed_exts.contains(ext) {
+                        files.push(path.to_path_buf());
+                    }
+                }
             }
         }
     }
