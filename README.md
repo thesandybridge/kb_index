@@ -51,7 +51,7 @@ You can set your OpenAI API key in one of two ways:
 
 1. Using the config command (recommended):
    ```bash
-   kb-index config --set-api-key="your_openai_api_key_here"
+   kb config --set-api-key="your_openai_api_key_here"
    ```
 
 2. Using an environment variable:
@@ -74,7 +74,7 @@ openai_api_key = "your_openai_api_key_here"
 
 You can view your current configuration with:
 ```bash
-kb-index config --show
+kb config --show
 ```
 
 ## Usage
@@ -84,7 +84,7 @@ kb-index config --show
 Index a single file or directory:
 
 ```bash
-kb-index index /path/to/your/code
+kb index /path/to/your/code
 ```
 
 This will:
@@ -98,7 +98,7 @@ This will:
 Search your indexed files with natural language:
 
 ```bash
-kb-index query "How does the authentication system work?"
+kb query "How does the authentication system work?"
 ```
 
 Options:
@@ -108,13 +108,13 @@ Options:
 Examples:
 ```bash
 # Get 10 results
-kb-index query "How to connect to the database" --top-k 10
+kb query "How to connect to the database" --top-k 10
 
 # Output in markdown format
-kb-index query "Error handling patterns" --format markdown
+kb query "Error handling patterns" --format markdown
 
 # Output in JSON format for programmatic use
-kb-index query "API endpoints for users" --format json
+kb query "API endpoints for users" --format json
 ```
 
 ## How It Works
