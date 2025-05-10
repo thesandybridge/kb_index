@@ -5,34 +5,11 @@ use syntect::highlighting::Style;
 use syntect::parsing::SyntaxReference;
 use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use std::io::Write;
-
-pub fn pipe_to_bat(content: &str, file_path: &str) -> std::io::Result<()> {
-    let extension = std::path::Path::new(file_path)
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("txt");
-
-    let mut child = Command::new("bat")
-        .arg("--language")
-        .arg(extension)
-        .arg("--style")
-        .arg("plain") // Or "full" or "numbers" if you want line numbers and headers
-        .arg("--paging")
-        .arg("always")
-        .stdin(Stdio::piped())
-        .spawn()?;
-
-    if let Some(stdin) = child.stdin.as_mut() {
-        stdin.write_all(content.as_bytes())?;
-    }
-
-    child.wait()?;
-    Ok(())
-}
+use std::collections::HashSet;
 
 pub fn highlight_syntax(code: &str, file_path: &str) -> String {
+    let config = config::load_config().expect("failed to load config");
+    let theme_name = config.syntax_theme.as_deref().unwrap_or("gruvbox-dark");
     let assets = HighlightingAssets::from_binary();
 
     // Unwrap the SyntaxSet and ThemeSet properly
@@ -41,7 +18,7 @@ pub fn highlight_syntax(code: &str, file_path: &str) -> String {
         .expect("failed to load bat syntax set");
 
     // If your theme isn't in the list, this will panic. Replace with one from `bat --list-themes` if needed.
-    let theme = assets.get_theme("gruvbox-dark");
+    let theme = assets.get_theme(theme_name);
 
     let extension = Path::new(file_path)
         .extension()
@@ -66,6 +43,13 @@ pub fn highlight_syntax(code: &str, file_path: &str) -> String {
 }
 
 pub fn collect_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let config = config::load_config()?;
+    let allowed_exts: HashSet<String> = config
+        .file_extensions
+        .unwrap_or_else(config::default_extensions)
+        .into_iter()
+        .collect();
+
     let mut files = Vec::new();
     if root.is_file() {
         files.push(root.to_path_buf());
@@ -73,15 +57,17 @@ pub fn collect_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
             let path = entry.path();
             if path.is_file()
-                && matches!(
-                    path.extension().and_then(|s| s.to_str()),
-                    Some("md" | "rs" | "tsx" | "ts" | "js" | "jsx")
-                )
+                && path
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .map(|ext| allowed_exts.contains(ext))
+                    .unwrap_or(false)
             {
                 files.push(path.to_path_buf());
             }
         }
     }
+
     Ok(files)
 }
 
@@ -95,6 +81,8 @@ pub fn chunk_text(text: &str) -> Vec<String> {
 }
 
 use regex::Regex;
+
+use crate::config;
 
 pub fn render_markdown_highlighted(md: &str) -> String {
     let code_block_re = Regex::new(r"(?s)```(\w*)\n(.*?)```").unwrap();

@@ -7,6 +7,18 @@ use std::fs;
 pub struct AppConfig {
     pub chroma_host: String,
     pub openai_api_key: Option<String>,
+    pub openai_completion_model: String,
+    pub openai_embedding_model: String,
+    pub file_extensions: Option<Vec<String>>,
+    pub syntax_theme: Option<String>,
+}
+
+
+pub fn default_extensions() -> Vec<String> {
+    vec!["md", "rs", "tsx", "ts", "js", "jsx", "html"]
+        .into_iter()
+        .map(String::from)
+        .collect()
 }
 
 pub fn load_config() -> anyhow::Result<AppConfig> {
@@ -22,6 +34,10 @@ pub fn load_config() -> anyhow::Result<AppConfig> {
         let default = AppConfig {
             chroma_host: "http://localhost:8000".into(),
             openai_api_key: env_api_key,
+            openai_completion_model: "gpt-4".to_string(),
+            openai_embedding_model: "text-embedding-3-large".to_string(),
+            file_extensions: Some(default_extensions()),
+            syntax_theme: Some("gruvbox-dark".to_string()),
         };
 
         if let Some(parent) = config_path.parent() {

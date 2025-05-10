@@ -19,9 +19,10 @@ struct EmbeddingData {
 }
 
 pub async fn get_embedding(client: &Client, text: &str) -> anyhow::Result<Vec<f32>> {
+    let config = config::load_config()?;
     let body = EmbeddingRequest {
         input: vec![text.to_string()],
-        model: "text-embedding-3-large".into(),
+        model: config.openai_embedding_model.into(),
     };
 
     // Get API key from config or environment

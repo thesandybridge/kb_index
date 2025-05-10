@@ -3,9 +3,10 @@ use crate::config;
 
 pub async fn get_llm_response(client: &Client, prompt: &str) -> anyhow::Result<String> {
     let api_key = config::get_openai_api_key()?;
+    let config = config::load_config()?;
 
     let body = serde_json::json!({
-        "model": "gpt-4",
+        "model": config.openai_completion_model,
         "messages": [
             { "role": "system", "content": "You are a expert personal and code assistant." },
             { "role": "user", "content": prompt }
