@@ -1,8 +1,5 @@
-mod chroma;
-mod cli;
-mod config;
-mod embedding;
-mod utils;
+use kb_core::cli;
+use kb_core::config;
 
 use cli::{commands, Cli};
 use clap::Parser;

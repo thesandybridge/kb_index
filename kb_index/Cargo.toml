@@ -1,0 +1,12 @@
+[package]
+name = "kb_index"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+kb_core = { path = "../kb_core" }
+anyhow = "1.0.98"
+clap = { version = "4.5.37", features = ["derive"] }
+reqwest = { version = "0.12.15", features = ["json"] }
+tokio = { version = "1.45.0", features = ["full"] }
+dirs = "6.0.0"

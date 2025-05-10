@@ -1,14 +1,9 @@
-[workspace]
-members = [
-    "kb_core",
-    "kb_index",
-]
-resolver = "2"
-
-[workspace.package]
+[package]
+name = "kb_core"
+version = "0.1.0"
 edition = "2021"
 
-[workspace.dependencies]
+[dependencies]
 anyhow = "1.0.98"
 clap = { version = "4.5.37", features = ["derive"] }
 console = "0.15.11"
