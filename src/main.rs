@@ -77,6 +77,16 @@ async fn main() -> anyhow::Result<()> {
                 let content = fs::read_to_string(&path)?;
                 let chunks = chunk_text(&content);
                 for chunk in chunks {
+                    if chunk.trim().is_empty() {
+                        println!("⚠️ Skipping empty chunk");
+                        continue;
+                    }
+
+                    if chunk.len() > 100_000 {
+                        println!("⚠️ Skipping large chunk ({} chars)", chunk.len());
+                        continue;
+                    }
+
                     let id = Uuid::new_v4().to_string();
                     let embedding = get_embedding(&client, &chunk).await?;
                     send_to_chroma(&client, &id, &chunk, &embedding, &path).await?;
