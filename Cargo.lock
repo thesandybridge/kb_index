@@ -1094,6 +1094,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "kb"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "dirs",
+ "kb_core",
+ "reqwest",
+ "tokio",
+]
+
+[[package]]
 name = "kb_core"
 version = "0.1.0"
 dependencies = [
@@ -1117,18 +1129,6 @@ dependencies = [
  "two-face",
  "uuid",
  "walkdir",
-]
-
-[[package]]
-name = "kb_index"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "dirs",
- "kb_core",
- "reqwest",
- "tokio",
 ]
 
 [[package]]
