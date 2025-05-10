@@ -265,6 +265,7 @@ fn chunk_text(text: &str) -> Vec<String> {
         .collect::<Vec<_>>()
         .chunks(10)
         .map(|chunk| chunk.join("\n"))
+        .filter(|chunk| !chunk.trim().is_empty())
         .collect()
 }
 
