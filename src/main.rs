@@ -1,70 +1,12 @@
+mod chroma;
+mod cli;
+mod config;
+mod embedding;
+mod utils;
+
+use cli::{commands, Cli};
 use clap::Parser;
-use dirs::config_dir;
-use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
-use std::fs;
-use std::path::{Path, PathBuf};
-use syntect::easy::HighlightLines;
-use syntect::highlighting::Style;
-use syntect::parsing::SyntaxSet;
-use syntect::util::{as_24_bit_terminal_escaped, LinesWithEndings};
-use two_face::theme::extra;
-use uuid::Uuid;
-use walkdir::WalkDir;
-
-#[derive(Deserialize, Serialize)]
-struct AppConfig {
-    chroma_host: String,
-}
-
-#[derive(Parser)]
-#[command(name = "kb-index")]
-#[command(about = "Index or query local files using Chroma")]
-enum Cli {
-    Index {
-        path: PathBuf,
-    },
-    Query {
-        query: String,
-        #[arg(short, long, default_value_t = 5)]
-        top_k: usize,
-        #[arg(short, long, default_value = "pretty")]
-        format: String,
-    },
-}
-
-#[derive(Serialize)]
-struct SearchResult<'a> {
-    index: usize,
-    source: &'a str,
-    distance: f64,
-    content: &'a str,
-}
-
-#[derive(Serialize)]
-struct EmbeddingRequest {
-    input: Vec<String>,
-    model: String,
-}
-
-#[derive(Deserialize)]
-struct EmbeddingResponse {
-    data: Vec<EmbeddingData>,
-}
-
-#[derive(Deserialize)]
-struct EmbeddingData {
-    embedding: Vec<f32>,
-}
-
-#[derive(Serialize)]
-struct ChromaV2AddRequest {
-    documents: Vec<String>,
-    ids: Vec<String>,
-    embeddings: Vec<Vec<f32>>,
-    metadatas: Vec<serde_json::Value>,
-}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -72,344 +14,46 @@ async fn main() -> anyhow::Result<()> {
     let client = Client::new();
 
     match cli {
+        Cli::Config { set_api_key, show } => {
+            // Config command doesn't need the API key validation
+            return commands::handle_config(set_api_key, show);
+        }
+        _ => {
+            // For other commands, validate that we have an OpenAI API key before proceeding
+            match config::get_openai_api_key() {
+                Ok(_) => {}, // Key exists, continue
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    eprintln!("\nTo fix this issue, either:");
+                    eprintln!("1. Set the OPENAI_API_KEY environment variable");
+                    eprintln!("   export OPENAI_API_KEY=your_api_key_here");
+                    eprintln!("2. Add your API key to the config file at:");
+                    if let Ok(config) = config::load_config() {
+                        if let Some(path) = dirs::config_dir() {
+                            let config_path = path.join("kb-index").join("config.toml");
+                            eprintln!("   {}", config_path.display());
+                            eprintln!("\nExample config.toml:");
+                            eprintln!("chroma_host = \"{}\"", config.chroma_host);
+                            eprintln!("openai_api_key = \"your_api_key_here\"");
+                            eprintln!("\nOr use the config command to set your API key:");
+                            eprintln!("   kb-index config --set-api-key=\"your_api_key_here\"");
+                        }
+                    }
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    match cli {
         Cli::Index { path } => {
-            let paths = collect_files(&path)?;
-            let total_files = paths.len() as u64;
-            let pb = ProgressBar::new(total_files);
-            pb.set_style(
-                ProgressStyle::with_template("{spinner:.green} [{elapsed_precise}] {msg}")
-                    .unwrap()
-                    .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
-            );
-
-            for path in paths {
-                pb.set_message(format!("Indexing {}", path.display()));
-                let content = fs::read_to_string(&path)?;
-                let chunks = chunk_text(&content);
-
-                for chunk in &chunks {
-                    if chunk.trim().is_empty() || chunk.len() > 100_000 {
-                        continue;
-                    }
-
-                    let id = Uuid::new_v4().to_string();
-                    let embedding = get_embedding(&client, &chunk).await?;
-                    send_to_chroma(&client, &id, &chunk, &embedding, &path, &pb).await?;
-                }
-                pb.inc(1);
-            }
-
-            pb.finish_with_message("🎉 Indexing complete.");
+            commands::handle_index(&client, &path).await?;
         }
-
         Cli::Query { query, top_k, format } => {
-            let embedding = get_embedding(&client, &query).await?;
-            let collection_id = get_collection_id(&client).await?;
-            let config = load_config()?;
-
-            let url = format!(
-                "{}/api/v2/tenants/{}/databases/{}/collections/{}/query",
-                config.chroma_host, TENANT, DATABASE, collection_id
-            );
-
-            let payload = serde_json::json!({
-                "query_embeddings": [embedding],
-                "n_results": top_k
-            });
-
-            let resp = client.post(&url).json(&payload).send().await?;
-            let body = resp.text().await?;
-            let parsed: serde_json::Value = serde_json::from_str(&body)?;
-
-            let docs = parsed["documents"]
-                .as_array()
-                .and_then(|outer| outer.get(0))
-                .and_then(|inner| inner.as_array())
-                .ok_or_else(|| anyhow::anyhow!("No documents in response"))?;
-
-            let metas = parsed["metadatas"]
-                .as_array()
-                .and_then(|outer| outer.get(0))
-                .and_then(|inner| inner.as_array())
-                .ok_or_else(|| anyhow::anyhow!("No metadatas in response"))?;
-
-            let dists = parsed["distances"]
-                .as_array()
-                .and_then(|outer| outer.get(0))
-                .and_then(|inner| inner.as_array())
-                .ok_or_else(|| anyhow::anyhow!("No distances in response"))?;
-
-            let results: Vec<SearchResult> = docs
-                .iter()
-                .enumerate()
-                .map(|(i, doc)| {
-                    let text = doc.as_str().unwrap_or("<invalid UTF-8>");
-                    let source = metas[i]
-                        .get("source")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("<unknown>");
-                    let distance = dists[i].as_f64().unwrap_or_default();
-
-                    SearchResult {
-                        index: i + 1,
-                        source,
-                        distance,
-                        content: text,
-                    }
-                })
-                .collect();
-
-            match format.as_str() {
-                "json" => println!("{}", serde_json::to_string_pretty(&results)?),
-                "markdown" => {
-                    for r in &results {
-                        let lang = Path::new(r.source)
-                            .extension()
-                            .and_then(|s| s.to_str())
-                            .unwrap_or("text");
-                        println!("### Result {}\n", r.index);
-                        println!("**Source:** `{}`  ", r.source);
-                        println!("**Distance:** `{:.4}`  ", r.distance);
-                        println!("```{}\n{}\n```", lang, r.content);
-                        println!();
-                    }
-                }
-                _ => {
-                    for r in &results {
-                        println!("--- Result {} ---", r.index);
-                        println!("📄 Source: {}", r.source);
-                        println!("🔎 Distance: {:.4}", r.distance);
-                        println!("{}", highlight_syntax(r.content, r.source));
-                        println!();
-                    }
-                }
-            }
+            commands::handle_query(&client, &query, top_k, &format).await?;
         }
+        _ => {} // Config case already handled above
     }
-
-    Ok(())
-}
-
-fn load_config() -> anyhow::Result<AppConfig> {
-    let config_path = config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Unable to determine config directory"))?
-        .join("kb-index")
-        .join("config.toml");
-
-    if !config_path.exists() {
-        let default = AppConfig {
-            chroma_host: "http://192.168.30.7:8000".into(),
-        };
-
-        if let Some(parent) = config_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let content = toml::to_string_pretty(&default)?;
-        fs::write(&config_path, content)?;
-
-        println!("✅ Created default config at {}", config_path.display());
-        return Ok(default);
-    }
-
-    let contents = fs::read_to_string(&config_path)?;
-    let config: AppConfig = toml::from_str(&contents)?;
-    Ok(config)
-}
-
-fn highlight_syntax(code: &str, file_path: &str) -> String {
-    let ps = SyntaxSet::load_defaults_newlines();
-    let theme_set = extra();
-    let theme = theme_set.get(two_face::theme::EmbeddedThemeName::GruvboxDark);
-
-    let syntax = ps
-        .find_syntax_for_file(file_path)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| ps.find_syntax_plain_text());
-
-    let mut h = HighlightLines::new(syntax, theme);
-    let mut result = String::new();
-
-    for line in LinesWithEndings::from(code) {
-        let ranges: Vec<(Style, &str)> = h.highlight_line(line, &ps).unwrap();
-        result.push_str(&as_24_bit_terminal_escaped(&ranges[..], false));
-    }
-
-    result
-}
-
-fn collect_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut files = Vec::new();
-    if root.is_file() {
-        files.push(root.to_path_buf());
-    } else {
-        for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
-            let path = entry.path();
-            if path.is_file()
-                && matches!(
-                    path.extension().and_then(|s| s.to_str()),
-                    Some("md" | "rs" | "tsx" | "ts" | "js" | "jsx")
-                )
-            {
-                files.push(path.to_path_buf());
-            }
-        }
-    }
-    Ok(files)
-}
-
-fn chunk_text(text: &str) -> Vec<String> {
-    text.lines()
-        .collect::<Vec<_>>()
-        .chunks(10)
-        .map(|chunk| chunk.join("\n"))
-        .filter(|chunk| !chunk.trim().is_empty())
-        .collect()
-}
-
-async fn get_embedding(client: &Client, text: &str) -> anyhow::Result<Vec<f32>> {
-    let body = EmbeddingRequest {
-        input: vec![text.to_string()],
-        model: "text-embedding-3-large".into(),
-    };
-
-    let response = client
-        .post("https://api.openai.com/v1/embeddings")
-        .bearer_auth(std::env::var("OPENAI_API_KEY")?)
-        .json(&body)
-        .send()
-        .await?;
-
-    let status = response.status();
-    let text_body = response.text().await?;
-
-    if !status.is_success() {
-        println!("❌ OpenAI error: HTTP {} - {}", status, text_body);
-        anyhow::bail!("OpenAI returned an error");
-    }
-
-    match serde_json::from_str::<EmbeddingResponse>(&text_body) {
-        Ok(parsed) => Ok(parsed.data.into_iter().next().unwrap().embedding),
-        Err(err) => {
-            println!("❌ Failed to parse response JSON: {}", err);
-            println!("Raw response:\n{}", text_body);
-            Err(err.into())
-        }
-    }
-}
-
-const TENANT: &str = "default_tenant";
-const DATABASE: &str = "default_database";
-const COLLECTION: &str = "kb_index";
-
-async fn get_collection_id(client: &Client) -> anyhow::Result<String> {
-    let config = load_config()?;
-    let url = format!(
-        "{}/api/v2/tenants/{}/databases/{}/collections",
-        config.chroma_host, TENANT, DATABASE
-    );
-
-    let resp = client.get(&url).send().await?;
-    let status = resp.status();
-    let body = resp.text().await?;
-
-    if !status.is_success() {
-        println!("❌ Failed to list collections: HTTP {} - {}", status, body);
-        anyhow::bail!("Failed to fetch collections");
-    }
-
-    let collections: serde_json::Value = serde_json::from_str(&body)?;
-    if let Some(arr) = collections.as_array() {
-        for collection in arr {
-            if collection.get("name") == Some(&serde_json::Value::String(COLLECTION.to_string())) {
-                if let Some(id) = collection.get("id").and_then(|v| v.as_str()) {
-                    return Ok(id.to_string());
-                }
-            }
-        }
-    }
-
-    anyhow::bail!("Collection '{}' not found", COLLECTION)
-}
-
-async fn create_collection_if_missing(client: &Client) -> anyhow::Result<()> {
-    let config = load_config()?;
-    let url = format!(
-        "{}/api/v2/tenants/{}/databases/{}/collections",
-        config.chroma_host, TENANT, DATABASE
-    );
-
-    let payload = serde_json::json!({
-        "name": COLLECTION,
-        "embedding_function": {
-            "type": "openai",
-            "model": "text-embedding-3-large"
-        }
-    });
-
-    let resp = client.post(&url).json(&payload).send().await?;
-
-    match resp.status() {
-        reqwest::StatusCode::CONFLICT => Ok(()),
-        status if status.is_success() => {
-            println!("✅ Created collection '{}'", COLLECTION);
-            Ok(())
-        }
-        status => {
-            let body = resp.text().await?;
-            println!("❌ Failed to create collection: HTTP {} - {}", status, body);
-            anyhow::bail!("Failed to create collection")
-        }
-    }
-}
-
-async fn send_to_chroma(
-    client: &Client,
-    id: &str,
-    doc: &str,
-    embedding: &Vec<f32>,
-    path: &Path,
-    pb: &ProgressBar,
-) -> anyhow::Result<()> {
-    let config = load_config()?;
-    create_collection_if_missing(&client).await?;
-    let collection_id = get_collection_id(&client).await?;
-
-    let payload = ChromaV2AddRequest {
-        ids: vec![id.to_string()],
-        embeddings: vec![embedding.clone()],
-        documents: vec![doc.to_string()],
-        metadatas: vec![serde_json::json!({
-            "source": path.display().to_string()
-        })],
-    };
-
-    let add_url = format!(
-        "{}/api/v2/tenants/{}/databases/{}/collections/{}/add",
-        config.chroma_host, TENANT, DATABASE, collection_id
-    );
-
-    let resp = client.post(&add_url).json(&payload).send().await?;
-    let status = resp.status();
-    let body = resp.text().await?;
-
-    if !status.is_success() {
-        pb.println(format!(
-            "❌ Chroma error: HTTP {} - {}\nPayload ID: {}, Path: {}",
-            status,
-            body,
-            id,
-            path.display()
-        ));
-        anyhow::bail!("Failed to insert into Chroma");
-    }
-
-    pb.set_message(format!(
-        "✅ Indexed chunk: file={}, chars={}",
-        path.display(),
-        doc.len()
-    ));
 
     Ok(())
 }
