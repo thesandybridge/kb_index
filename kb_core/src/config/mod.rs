@@ -2,6 +2,7 @@ use dirs::config_dir;
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
+use std::path::PathBuf;
 
 #[derive(Deserialize, Serialize, Clone)]
 pub struct AppConfig {
@@ -80,4 +81,13 @@ pub fn get_openai_api_key() -> anyhow::Result<String> {
     }
 
     anyhow::bail!("OpenAI API key not found in environment or config file. Please set the OPENAI_API_KEY environment variable or add it to your config file.")
+}
+
+pub fn get_config_dir() -> anyhow::Result<PathBuf> {
+    let path = config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Unable to determine config directory"))?
+        .join("kb-index");
+
+    std::fs::create_dir_all(&path)?;
+    Ok(path)
 }

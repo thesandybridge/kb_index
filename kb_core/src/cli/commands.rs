@@ -3,6 +3,7 @@ use crate::config;
 use crate::embedding;
 use crate::llm;
 use crate::utils;
+use std::time::UNIX_EPOCH;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use std::fs;
@@ -56,7 +57,7 @@ pub fn handle_config(set_api_key: Option<String>, show: bool) -> anyhow::Result<
 }
 
 pub async fn handle_index(client: &Client, path: &Path) -> anyhow::Result<()> {
-    let paths = utils::collect_files(path)?;
+    let paths = crate::utils::collect_files(path)?;
     let total_files = paths.len() as u64;
     let pb = ProgressBar::new(total_files);
     pb.set_style(
@@ -65,23 +66,69 @@ pub async fn handle_index(client: &Client, path: &Path) -> anyhow::Result<()> {
             .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
     );
 
+    let config_dir = crate::config::get_config_dir()?;
+    let mut state = crate::state::IndexState::load(&config_dir)?;
+
     for path in paths {
         pb.set_message(format!("Indexing {}", path.display()));
+        let metadata = fs::metadata(&path)?;
+        let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs();
+        let file_str = path.to_string_lossy().to_string();
+
+        // Skip if the file hasn't changed
+        if let Some(prev) = state.get_last_modified(&file_str) {
+            if prev == modified {
+                pb.inc(1);
+                continue;
+            }
+        }
+
         let content = fs::read_to_string(&path)?;
-        let chunks = utils::chunk_text(&content);
+        let chunks = crate::utils::chunk_text(&content);
+        let prev_chunks = state.get_file_chunks(&file_str).cloned().unwrap_or_default();
+        let mut new_chunks = vec![];
 
         for chunk in &chunks {
             if chunk.trim().is_empty() || chunk.len() > 100_000 {
                 continue;
             }
 
+            let hash = crate::state::IndexState::hash_chunk(chunk);
+            if crate::state::IndexState::has_chunk(&prev_chunks, &hash) {
+                continue;
+            }
+
             let id = Uuid::new_v4().to_string();
-            let embedding = embedding::get_embedding(&client, &chunk).await?;
-            chroma::send_to_chroma(&client, &id, &chunk, &embedding, &path, &pb).await?;
+            let embedding = crate::embedding::get_embedding(client, chunk).await?;
+            crate::chroma::send_to_chroma(client, &id, chunk, &embedding, &path, &pb).await?;
+
+            new_chunks.push(crate::state::IndexedChunk { id, hash });
         }
+
+        if !new_chunks.is_empty() {
+            let mut updated_chunks = prev_chunks.clone();
+            let mut removed_chunks = vec![];
+
+            updated_chunks.retain(|c| {
+                let keep = new_chunks.iter().all(|n| n.hash != c.hash);
+                if !keep {
+                    removed_chunks.push(c.clone());
+                }
+                keep
+            });
+
+            updated_chunks.extend(new_chunks);
+            state.update_file_chunks(&file_str, updated_chunks, modified);
+
+            for chunk in removed_chunks {
+                crate::chroma::delete_chunk(client, &chunk.id).await?;
+            }
+        }
+
         pb.inc(1);
     }
 
+    state.save(&config_dir)?;
     pb.finish_with_message("🎉 Indexing complete.");
     Ok(())
 }
@@ -149,7 +196,7 @@ pub async fn handle_query(
             }
         }
         "smart" => {
-            let annotated_chunks: Vec<String> = results.iter()
+            let context_chunks: Vec<String> = results.iter()
                 .map(|r| {
                     let lang = Path::new(r.source)
                         .extension()
@@ -163,20 +210,9 @@ pub async fn handle_query(
                 })
                 .collect();
 
-            let context = annotated_chunks.join("\n\n---\n\n");
-
-            let prompt = format!(
-                "You are a helpful coding and personal assistant.\n\
-                    Use the following code snippets to answer the question. Each file is shown with its source path and syntax.\n\
-                    Format your response in Markdown and include code where necessary.\n\n\
-                    Question:\n{}\n\n\
-                    Documents:\n{}\n\n\
-                    Answer:",
-                query, context
-            );
-
-            let raw_answer = llm::get_llm_response(client, &prompt).await?;
+            let raw_answer = llm::get_llm_response(client, query, &context_chunks).await?;
             let rendered = utils::render_markdown_highlighted(&raw_answer);
+
             println!("💡 Answer:\n\n{}", rendered);
         }
         _ => {

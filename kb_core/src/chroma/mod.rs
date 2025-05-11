@@ -159,3 +159,27 @@ pub async fn query_chroma(
 
     Ok(parsed)
 }
+
+pub async fn delete_chunk(client: &Client, id: &str) -> anyhow::Result<()> {
+    let config = config::load_config()?;
+    let collection_id = get_collection_id(client).await?;
+
+    let url = format!(
+        "{}/api/v2/tenants/{}/databases/{}/collections/{}/delete",
+        config.chroma_host, TENANT, DATABASE, collection_id
+    );
+
+    let payload = serde_json::json!({
+        "ids": [id]
+    });
+
+    let resp = client.post(&url).json(&payload).send().await?;
+    let status = resp.status();
+    let body = resp.text().await?;
+
+    if !status.is_success() {
+        anyhow::bail!("Failed to delete chunk {}: HTTP {} - {}", id, status, body);
+    }
+
+    Ok(())
+}
