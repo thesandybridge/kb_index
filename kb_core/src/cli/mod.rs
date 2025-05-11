@@ -20,7 +20,7 @@ pub enum Cli {
         #[arg(short, long, default_value_t = 5)]
         top_k: usize,
         /// Output format (pretty, json, markdown)
-        #[arg(short, long, default_value = "pretty")]
+        #[arg(short, long, default_value = "smart")]
         format: String,
     },
     /// Configure the application
