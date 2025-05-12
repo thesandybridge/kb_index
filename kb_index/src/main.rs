@@ -13,7 +13,7 @@ async fn main() -> anyhow::Result<()> {
     match cli {
         Cli::Config { set_api_key, show } => {
             // Config command doesn't need the API key validation
-            return commands::handle_config(set_api_key, show);
+            return commands::config::handle_config(set_api_key, show);
         }
         _ => {
             // For other commands, validate that we have an OpenAI API key before proceeding
@@ -44,10 +44,10 @@ async fn main() -> anyhow::Result<()> {
 
     match cli {
         Cli::Index { path } => {
-            commands::handle_index(&client, &path).await?;
+            commands::index::handle_index(&client, &path).await?;
         }
         Cli::Query { query, top_k, format } => {
-            commands::handle_query(&client, &query, top_k, &format).await?;
+            commands::query::handle_query(&client, &query, top_k, &format).await?;
         }
         _ => {} // Config case already handled above
     }

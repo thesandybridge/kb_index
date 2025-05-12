@@ -1,0 +1,102 @@
+use crate::chroma::{self, SearchResult};
+use crate::embedding;
+use crate::llm;
+use crate::utils;
+use reqwest::Client;
+use std::path::Path;
+
+pub async fn handle_query(
+    client: &Client,
+    query: &str,
+    top_k: usize,
+    format: &str,
+) -> anyhow::Result<()> {
+    let embedding = embedding::get_embedding(&client, &query).await?;
+    let parsed = chroma::query_chroma(&client, &embedding, top_k).await?;
+
+    let docs = parsed["documents"]
+        .as_array()
+        .and_then(|outer| outer.get(0))
+        .and_then(|inner| inner.as_array())
+        .ok_or_else(|| anyhow::anyhow!("No documents in response"))?;
+
+    let metas = parsed["metadatas"]
+        .as_array()
+        .and_then(|outer| outer.get(0))
+        .and_then(|inner| inner.as_array())
+        .ok_or_else(|| anyhow::anyhow!("No metadatas in response"))?;
+
+    let dists = parsed["distances"]
+        .as_array()
+        .and_then(|outer| outer.get(0))
+        .and_then(|inner| inner.as_array())
+        .ok_or_else(|| anyhow::anyhow!("No distances in response"))?;
+
+    let results: Vec<SearchResult> = docs
+        .iter()
+        .enumerate()
+        .map(|(i, doc)| {
+            let text = doc.as_str().unwrap_or("<invalid UTF-8>");
+            let source = metas[i]
+                .get("source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("<unknown>");
+            let distance = dists[i].as_f64().unwrap_or_default();
+
+            SearchResult {
+                index: i + 1,
+                source,
+                distance,
+                content: text,
+            }
+        })
+        .collect();
+
+    match format {
+        "json" => println!("{}", serde_json::to_string_pretty(&results)?),
+        "markdown" => {
+            for r in &results {
+                let lang = Path::new(r.source)
+                    .extension()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("text");
+                println!("### Result {}\n", r.index);
+                println!("**Source:** `{}`  ", r.source);
+                println!("**Distance:** `{:.4}`  ", r.distance);
+                println!("```{}\n{}\n```", lang, r.content);
+                println!();
+            }
+        }
+        "smart" => {
+            let context_chunks: Vec<String> = results.iter()
+                .map(|r| {
+                    let lang = Path::new(r.source)
+                        .extension()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("text");
+
+                    format!(
+                        "**File:** `{}`\n\n```{}\n{}\n```",
+                        r.source, lang, r.content
+                    )
+                })
+                .collect();
+
+            let raw_answer = llm::get_llm_response(client, query, &context_chunks).await?;
+            let rendered = utils::render_markdown_highlighted(&raw_answer);
+
+            println!("💡 Answer:\n\n{}", rendered);
+        }
+        _ => {
+            for r in &results {
+                println!("--- Result {} ---", r.index);
+                println!("📄 Source: {}", r.source);
+                println!("🔎 Distance: {:.4}", r.distance);
+                println!("{}", utils::highlight_syntax(r.content, r.source));
+                println!();
+            }
+        }
+    }
+
+    Ok(())
+}
