@@ -12,10 +12,8 @@ pub async fn get_llm_response(
     let config_dir = config::get_config_dir()?;
     let mut state = QueryState::load(&config_dir)?;
 
-    // Generate context hash from context chunks
     let context_hash = hash_query_context(prompt, context_chunks);
 
-    // Return cached answer if it exists
     if let Some(cached) = state.get_cached_answer(prompt, &context_hash) {
         return Ok(cached);
     }

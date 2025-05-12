@@ -58,7 +58,7 @@ pub fn collect_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
         }
     } else {
         let walker = WalkBuilder::new(root)
-            .add_custom_ignore_filename(".kbignore") // Optional
+            .add_custom_ignore_filename(".kbignore")
             .hidden(false)
             .build();
 

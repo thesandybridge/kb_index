@@ -27,3 +27,4 @@ bat = { version = "0.25.0", features = ["build-assets"] }
 ignore = "0.4.23"
 sha2 = "0.10.9"
 hex = "0.4.3"
+futures = "0.3.31"

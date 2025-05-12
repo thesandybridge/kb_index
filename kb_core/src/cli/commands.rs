@@ -3,12 +3,17 @@ use crate::config;
 use crate::embedding;
 use crate::llm;
 use crate::utils;
-use std::time::UNIX_EPOCH;
+use crate::state::{IndexState, IndexedChunk};
+use futures::stream::{FuturesUnordered, StreamExt};
+use std::time::{Duration, UNIX_EPOCH};
+use tokio::time::sleep;
 use indicatif::{ProgressBar, ProgressStyle};
 use reqwest::Client;
 use std::fs;
 use std::path::Path;
 use uuid::Uuid;
+
+const BATCH_SIZE: usize = 8;
 
 pub fn handle_config(set_api_key: Option<String>, show: bool) -> anyhow::Result<()> {
     let config_path = dirs::config_dir()
@@ -57,7 +62,7 @@ pub fn handle_config(set_api_key: Option<String>, show: bool) -> anyhow::Result<
 }
 
 pub async fn handle_index(client: &Client, path: &Path) -> anyhow::Result<()> {
-    let paths = crate::utils::collect_files(path)?;
+    let paths = utils::collect_files(path)?;
     let total_files = paths.len() as u64;
     let pb = ProgressBar::new(total_files);
     pb.set_style(
@@ -66,8 +71,8 @@ pub async fn handle_index(client: &Client, path: &Path) -> anyhow::Result<()> {
             .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏ "),
     );
 
-    let config_dir = crate::config::get_config_dir()?;
-    let mut state = crate::state::IndexState::load(&config_dir)?;
+    let config_dir = config::get_config_dir()?;
+    let mut state = IndexState::load(&config_dir)?;
 
     for path in paths {
         pb.set_message(format!("Indexing {}", path.display()));
@@ -75,7 +80,7 @@ pub async fn handle_index(client: &Client, path: &Path) -> anyhow::Result<()> {
         let modified = metadata.modified()?.duration_since(UNIX_EPOCH)?.as_secs();
         let file_str = path.to_string_lossy().to_string();
 
-        // Skip if the file hasn't changed
+        // Skip if file unchanged
         if let Some(prev) = state.get_last_modified(&file_str) {
             if prev == modified {
                 pb.inc(1);
@@ -84,30 +89,50 @@ pub async fn handle_index(client: &Client, path: &Path) -> anyhow::Result<()> {
         }
 
         let content = fs::read_to_string(&path)?;
-        let chunks = crate::utils::chunk_text(&content);
+        let chunks = utils::chunk_text(&content);
         let prev_chunks = state.get_file_chunks(&file_str).cloned().unwrap_or_default();
-        let mut new_chunks = vec![];
+        let mut new_chunks = Vec::new();
+        let mut chunk_info = Vec::new();
 
         for chunk in &chunks {
             if chunk.trim().is_empty() || chunk.len() > 100_000 {
                 continue;
             }
 
-            let hash = crate::state::IndexState::hash_chunk(chunk);
-            if crate::state::IndexState::has_chunk(&prev_chunks, &hash) {
+            let hash = IndexState::hash_chunk(chunk);
+            if IndexState::has_chunk(&prev_chunks, &hash) {
                 continue;
             }
 
-            let id = Uuid::new_v4().to_string();
-            let embedding = crate::embedding::get_embedding(client, chunk).await?;
-            crate::chroma::send_to_chroma(client, &id, chunk, &embedding, &path, &pb).await?;
+            chunk_info.push((chunk.clone(), hash));
+        }
 
-            new_chunks.push(crate::state::IndexedChunk { id, hash });
+        for batch in chunk_info.chunks(BATCH_SIZE) {
+            let mut tasks = FuturesUnordered::new();
+
+            for (chunk, hash) in batch.iter().cloned() {
+                let client = client.clone();
+                let path = path.to_path_buf();
+                let pb = pb.clone();
+                tasks.push(async move {
+                    sleep(Duration::from_millis(100)).await;
+                    let embedding = embedding::get_embedding(&client, &chunk).await?;
+                    let id = Uuid::new_v4().to_string();
+                    chroma::send_to_chroma(&client, &id, &chunk, &embedding, &path, &pb).await?;
+                    Ok::<_, anyhow::Error>(IndexedChunk { id, hash })
+                });
+            }
+
+            while let Some(result) = tasks.next().await {
+                if let Ok(chunk) = result {
+                    new_chunks.push(chunk);
+                }
+            }
         }
 
         if !new_chunks.is_empty() {
             let mut updated_chunks = prev_chunks.clone();
-            let mut removed_chunks = vec![];
+            let mut removed_chunks = Vec::new();
 
             updated_chunks.retain(|c| {
                 let keep = new_chunks.iter().all(|n| n.hash != c.hash);
@@ -121,7 +146,7 @@ pub async fn handle_index(client: &Client, path: &Path) -> anyhow::Result<()> {
             state.update_file_chunks(&file_str, updated_chunks, modified);
 
             for chunk in removed_chunks {
-                crate::chroma::delete_chunk(client, &chunk.id).await?;
+                chroma::delete_chunk(client, &chunk.id).await?;
             }
         }
 
