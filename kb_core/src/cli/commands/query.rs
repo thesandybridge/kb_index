@@ -4,6 +4,8 @@ use crate::llm;
 use crate::utils;
 use reqwest::Client;
 use std::path::Path;
+use crate::state::{QueryState, hash_query_context};
+use crate::config;
 
 pub async fn handle_query(
     client: &Client,
@@ -11,8 +13,20 @@ pub async fn handle_query(
     top_k: usize,
     format: &str,
 ) -> anyhow::Result<()> {
-    let embedding = embedding::get_embedding(&client, &query).await?;
-    let parsed = chroma::query_chroma(&client, &embedding, top_k).await?;
+    let config_dir = config::get_config_dir()?;
+    let mut cache = QueryState::load(&config_dir)?;
+
+    // Embed the query
+    let query_embedding = embedding::get_embedding(client, query).await?;
+
+    // 🔍 Try similarity cache
+    if let Some(similar) = cache.find_similar(&query_embedding, 0.93) {
+        println!("💡 Cached Answer:\n\n{}", utils::render_markdown_highlighted(&similar));
+        return Ok(());
+    }
+
+    // Otherwise: do Chroma vector search
+    let parsed = chroma::query_chroma(client, &query_embedding, top_k).await?;
 
     let docs = parsed["documents"]
         .as_array()
@@ -82,8 +96,13 @@ pub async fn handle_query(
                 })
                 .collect();
 
+            let context_hash = hash_query_context(query, &context_chunks);
             let raw_answer = llm::get_llm_response(client, query, &context_chunks).await?;
             let rendered = utils::render_markdown_highlighted(&raw_answer);
+
+            // 🧠 Cache the answer with the current query embedding
+            cache.insert_answer(query.to_string(), context_hash, query_embedding.clone(), raw_answer.clone());
+            cache.save(&config_dir)?;
 
             println!("💡 Answer:\n\n{}", rendered);
         }

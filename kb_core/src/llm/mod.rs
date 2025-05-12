@@ -1,4 +1,5 @@
 use crate::config;
+use crate::embedding;
 use crate::state::{QueryState, hash_query_context};
 use reqwest::Client;
 
@@ -14,13 +15,19 @@ pub async fn get_llm_response(
 
     let context_hash = hash_query_context(prompt, context_chunks);
 
+    // Generate query embedding (for similarity + caching)
+    let embedding = embedding::get_embedding(client, prompt).await?;
+
+    if let Some(similar) = state.find_similar(&embedding, 0.93) {
+        return Ok(similar);
+    }
+    // Check for cached similar answer
     if let Some(cached) = state.get_cached_answer(prompt, &context_hash) {
         return Ok(cached);
     }
 
-    // Concatenate all context chunks for the prompt
+    // Prepare full prompt
     let full_context = context_chunks.join("\n\n---\n\n");
-
     let full_prompt = format!(
         "You are an expert personal and code assistant.\n\
          Use the following code snippets to answer the question. \
@@ -53,8 +60,7 @@ pub async fn get_llm_response(
         .unwrap_or("No answer generated")
         .to_string();
 
-    // Cache the answer
-    state.insert_answer(prompt.to_string(), context_hash, answer.clone());
+    state.insert_answer(prompt.to_string(), context_hash, embedding, answer.clone());
     state.save(&config_dir)?;
 
     Ok(answer)

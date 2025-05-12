@@ -80,6 +80,7 @@ impl IndexState {
 pub struct QueryCache {
     pub query: String,
     pub context_hash: String,
+    pub embedding: Vec<f32>,
     pub answer: String,
 }
 
@@ -113,8 +114,33 @@ impl QueryState {
             .map(|e| e.answer.clone())
     }
 
-    pub fn insert_answer(&mut self, query: String, context_hash: String, answer: String) {
-        self.entries.push(QueryCache { query, context_hash, answer });
+    pub fn insert_answer(
+        &mut self,
+        query: String,
+        context_hash: String,
+        embedding: Vec<f32>,
+        answer: String
+    ) {
+        self.entries.push(QueryCache { query, context_hash, embedding, answer });
+    }
+
+    pub fn find_similar(&self, query_embedding: &[f32], threshold: f32) -> Option<String> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                if e.embedding.len() != query_embedding.len() {
+                    return None;
+                }
+
+                let similarity = cosine_similarity(&e.embedding, query_embedding);
+                if similarity > threshold {
+                    Some((similarity, e.answer.clone()))
+                } else {
+                    None
+                }
+            })
+            .max_by(|a, b| a.0.partial_cmp(&b.0).unwrap())
+            .map(|(_, answer)| answer)
     }
 }
 
@@ -125,4 +151,11 @@ pub fn hash_query_context(query: &str, context_chunks: &[String]) -> String {
         hasher.update(chunk.as_bytes());
     }
     hex::encode(hasher.finalize())
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
+    let dot = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum::<f32>();
+    let norm_a = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    dot / (norm_a * norm_b + 1e-8) // Add small epsilon to avoid div-by-zero
 }
