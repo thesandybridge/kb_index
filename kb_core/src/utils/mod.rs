@@ -57,12 +57,19 @@ pub fn collect_files(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
             }
         }
     } else {
-        let walker = WalkBuilder::new(root)
+        let mut builder = WalkBuilder::new(root);
+        builder
             .add_custom_ignore_filename(".kbignore")
-            .hidden(false)
-            .build();
+            .hidden(false);
 
-        for result in walker {
+        if let Ok(global_dir) = crate::config::get_config_dir() {
+            let global_ignore = global_dir.join("global.kbignore");
+            if global_ignore.exists() {
+                builder.add_ignore(global_ignore);
+            }
+        }
+
+        for result in builder.build() {
             let entry = result?;
             let path = entry.path();
             if path.is_file() {
