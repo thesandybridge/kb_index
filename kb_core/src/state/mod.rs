@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::io::Write;
+use std::time::{UNIX_EPOCH, SystemTime};
+use uuid::Uuid;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Sha256, Digest};
@@ -159,3 +161,101 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
     let norm_b = b.iter().map(|x| x * x).sum::<f32>().sqrt();
     dot / (norm_a * norm_b + 1e-8) // Add small epsilon to avoid div-by-zero
 }
+
+#[derive(Serialize, Deserialize, Debug, Default, Clone)]
+pub struct SessionState {
+    pub id: String,
+    pub queries: Vec<String>,
+    pub responses: Vec<String>,
+    pub created_at: u64,
+    pub last_updated: u64,
+}
+
+#[derive(Serialize, Deserialize, Debug, Default)]
+pub struct SessionManager {
+    pub sessions: HashMap<String, SessionState>,
+    pub active_session: Option<String>,
+}
+
+impl SessionManager {
+    pub fn load(config_dir: &PathBuf) -> Result<Self> {
+        let path = config_dir.join("sessions.json");
+        if !path.exists() {
+            return Ok(SessionManager::default());
+        }
+        let contents = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read sessions from {}", path.display()))?;
+        let state = serde_json::from_str(&contents)?;
+        Ok(state)
+    }
+
+    pub fn save(&self, config_dir: &PathBuf) -> Result<()> {
+        let path = config_dir.join("sessions.json");
+        let json = serde_json::to_string_pretty(self)?;
+        let mut file = fs::File::create(&path)?;
+        file.write_all(json.as_bytes())?;
+        Ok(())
+    }
+
+    pub fn create_session(&mut self) -> String {
+        let session_id = Uuid::new_v4().to_string();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let session = SessionState {
+            id: session_id.clone(),
+            queries: Vec::new(),
+            responses: Vec::new(),
+            created_at: now,
+            last_updated: now,
+        };
+
+        self.sessions.insert(session_id.clone(), session);
+        self.active_session = Some(session_id.clone());
+        session_id
+    }
+
+    pub fn get_active_session(&self) -> Option<&SessionState> {
+        self.active_session.as_ref().and_then(|id| self.sessions.get(id))
+    }
+
+    pub fn get_active_session_mut(&mut self) -> Option<&mut SessionState> {
+        if let Some(id) = &self.active_session {
+            self.sessions.get_mut(id)
+        } else {
+            None
+        }
+    }
+
+    pub fn add_interaction(&mut self, query: String, response: String) -> Result<()> {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        if let Some(session) = self.get_active_session_mut() {
+            session.queries.push(query);
+            session.responses.push(response);
+            session.last_updated = now;
+            Ok(())
+        } else {
+            anyhow::bail!("No active session found")
+        }
+    }
+
+    pub fn set_active_session(&mut self, session_id: &str) -> Result<()> {
+        if self.sessions.contains_key(session_id) {
+            self.active_session = Some(session_id.to_string());
+            Ok(())
+        } else {
+            anyhow::bail!("Session not found: {}", session_id)
+        }
+    }
+
+    pub fn list_sessions(&self) -> Vec<(&String, &SessionState)> {
+        self.sessions.iter().collect()
+    }
+}
+

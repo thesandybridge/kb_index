@@ -1,5 +1,6 @@
 use crate::config;
 use crate::embedding;
+use crate::state::SessionManager;
 use crate::state::{QueryState, hash_query_context};
 use reqwest::Client;
 
@@ -7,6 +8,7 @@ pub async fn get_llm_response(
     client: &Client,
     prompt: &str,
     context_chunks: &[String],
+    session_manager: Option<&SessionManager>,
 ) -> anyhow::Result<String> {
     let api_key = config::get_openai_api_key()?;
     let cfg = config::load_config()?;
@@ -21,27 +23,56 @@ pub async fn get_llm_response(
     if let Some(similar) = state.find_similar(&embedding, 0.93) {
         return Ok(similar);
     }
+
     // Check for cached similar answer
     if let Some(cached) = state.get_cached_answer(prompt, &context_hash) {
         return Ok(cached);
     }
 
-    // Prepare full prompt
+    // Prepare full prompt with session context if available
     let full_context = context_chunks.join("\n\n---\n\n");
-    let full_prompt = format!(
-        "You are an expert personal and code assistant.\n\
-         Use the following code snippets to answer the question. \
+
+    let mut messages = vec![
+        serde_json::json!({
+            "role": "system",
+            "content": "You are an expert personal and code assistant."
+        }),
+    ];
+
+    // Add session context if available
+    if let Some(manager) = session_manager {
+        if let Some(session) = manager.get_active_session() {
+            // Add previous interactions as context
+            for (q, r) in session.queries.iter().zip(session.responses.iter()) {
+                messages.push(serde_json::json!({
+                    "role": "user",
+                    "content": q
+                }));
+
+                messages.push(serde_json::json!({
+                    "role": "assistant",
+                    "content": r
+                }));
+            }
+        }
+    }
+
+    // Add current query with context
+    let user_content = format!(
+        "Use the following code snippets to answer the question. \
          Format your response in Markdown and include code where necessary.\n\n\
-         Question:\n{}\n\nContext:\n{}\n\nAnswer:",
+         Question:\n{}\n\nContext:\n{}",
         prompt, full_context
     );
 
+    messages.push(serde_json::json!({
+        "role": "user",
+        "content": user_content
+    }));
+
     let body = serde_json::json!({
         "model": cfg.openai_completion_model,
-        "messages": [
-            { "role": "system", "content": "You are an expert personal and code assistant." },
-            { "role": "user", "content": full_prompt }
-        ],
+        "messages": messages,
         "temperature": 0.4
     });
 
@@ -65,3 +96,4 @@ pub async fn get_llm_response(
 
     Ok(answer)
 }
+

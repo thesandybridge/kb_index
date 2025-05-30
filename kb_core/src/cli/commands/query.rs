@@ -4,7 +4,7 @@ use crate::llm;
 use crate::utils;
 use reqwest::Client;
 use std::path::Path;
-use crate::state::{QueryState, hash_query_context};
+use crate::state::{QueryState, SessionManager, hash_query_context};
 use crate::config;
 
 pub async fn handle_query(
@@ -12,9 +12,28 @@ pub async fn handle_query(
     query: &str,
     top_k: usize,
     format: &str,
+    session_id: Option<String>,
 ) -> anyhow::Result<()> {
     let config_dir = config::get_config_dir()?;
     let mut cache = QueryState::load(&config_dir)?;
+    let mut session_manager = SessionManager::load(&config_dir)?;
+
+    // Handle session management
+    if let Some(id) = session_id {
+        if id == "new" {
+            let new_id = session_manager.create_session();
+            println!("🆕 Created new session: {}", new_id);
+        } else {
+            // Pass a reference to set_active_session
+            session_manager.set_active_session(&id)?;
+            println!("🔄 Switched to session: {}", id);
+        }
+    } else if session_manager.active_session.is_none() {
+        // Create a default session if none exists
+        let new_id = session_manager.create_session();
+        println!("🆕 Created default session: {}", new_id);
+    }
+
 
     // Embed the query
     let query_embedding = embedding::get_embedding(client, query).await?;
@@ -22,6 +41,14 @@ pub async fn handle_query(
     // 🔍 Try similarity cache
     if let Some(similar) = cache.find_similar(&query_embedding, 0.93) {
         println!("💡 Cached Answer:\n\n{}", utils::render_markdown_highlighted(&similar));
+
+        // Add to session history even if cached
+        if let Some(session) = session_manager.get_active_session_mut() {
+            session.queries.push(query.to_string());
+            session.responses.push(similar);
+            session_manager.save(&config_dir)?;
+        }
+
         return Ok(());
     }
 
@@ -97,14 +124,33 @@ pub async fn handle_query(
                 .collect();
 
             let context_hash = hash_query_context(query, &context_chunks);
-            let raw_answer = llm::get_llm_response(client, query, &context_chunks).await?;
+
+            // Pass session manager to get_llm_response
+            let raw_answer = llm::get_llm_response(
+                client,
+                query,
+                &context_chunks,
+                Some(&session_manager)
+            ).await?;
+
             let rendered = utils::render_markdown_highlighted(&raw_answer);
 
             // 🧠 Cache the answer with the current query embedding
             cache.insert_answer(query.to_string(), context_hash, query_embedding.clone(), raw_answer.clone());
             cache.save(&config_dir)?;
 
+            // Add to session history
+            session_manager.add_interaction(query.to_string(), raw_answer)?;
+            session_manager.save(&config_dir)?;
+
             println!("💡 Answer:\n\n{}", rendered);
+
+            if let Some(session) = session_manager.get_active_session() {
+                println!("\n📝 Session: {} (Q&A: {})",
+                    &session.id[..8],
+                    session.queries.len()
+                );
+            }
         }
         _ => {
             for r in &results {
@@ -119,3 +165,4 @@ pub async fn handle_query(
 
     Ok(())
 }
+

@@ -46,8 +46,11 @@ async fn main() -> anyhow::Result<()> {
         Cli::Index { path } => {
             commands::index::handle_index(&client, &path).await?;
         }
-        Cli::Query { query, top_k, format } => {
-            commands::query::handle_query(&client, &query, top_k, &format).await?;
+        Cli::Query { query, top_k, format, session} => {
+            commands::query::handle_query(&client, &query, top_k, &format, session).await?;
+        }
+        Cli::Sessions { list, clear, switch } => {
+            commands::session::handle_sessions(list, clear, switch)?;
         }
         _ => {} // Config case already handled above
     }
