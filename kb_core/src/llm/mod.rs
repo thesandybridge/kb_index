@@ -39,11 +39,13 @@ pub async fn get_llm_response(
         }),
     ];
 
-    // Add session context if available
     if let Some(manager) = session_manager {
         if let Some(session) = manager.get_active_session() {
-            // Add previous interactions as context
-            for (q, r) in session.queries.iter().zip(session.responses.iter()) {
+            // Only include the last 5 interactions (or fewer if the session is shorter)
+            let window_size = 5;
+            let start_idx = session.queries.len().saturating_sub(window_size);
+
+            for (q, r) in session.queries[start_idx..].iter().zip(session.responses[start_idx..].iter()) {
                 messages.push(serde_json::json!({
                     "role": "user",
                     "content": q
@@ -54,8 +56,23 @@ pub async fn get_llm_response(
                     "content": r
                 }));
             }
+
+            // If we're windowing, add a note about it
+            if start_idx > 0 {
+                let context_note = format!(
+                    "Note: This conversation has {} previous messages that aren't shown here. I'm continuing from where we left off.",
+                    start_idx
+                );
+
+                // Insert this at the beginning of the messages
+                messages.insert(1, serde_json::json!({
+                    "role": "system",
+                    "content": context_note
+                }));
+            }
         }
     }
+
 
     // Add current query with context
     let user_content = format!(
