@@ -35,7 +35,7 @@ pub async fn get_llm_response(
     let mut messages = vec![
         serde_json::json!({
             "role": "system",
-            "content": "You are an expert personal and code assistant."
+            "content": "You are an expert personal and code assistant. Always format code blocks properly with triple backticks and language specifiers, like ```rust or ```typescript. Never use shorthand language identifiers without backticks."
         }),
     ];
 
@@ -78,6 +78,8 @@ pub async fn get_llm_response(
     let user_content = format!(
         "Use the following code snippets to answer the question. \
          Format your response in Markdown and include code where necessary.\n\n\
+         IMPORTANT: Always use proper markdown code blocks with triple backticks and language specifiers, \
+         like ```typescript or ```rust. DO NOT use shorthand like 'ts' or 'tsx' without the triple backticks.\n\n\
          Question:\n{}\n\nContext:\n{}",
         prompt, full_context
     );
